@@ -1,8 +1,8 @@
+import os
 from flask import Flask, jsonify, request
 from flask_cors import CORS
 import yt_dlp
 import logging
-import os
 
 app = Flask(__name__)
 CORS(app)  # Allow requests from Android app
@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 def home():
     return jsonify({
         'status': 'running',
-        'message': 'YouTube Stream Proxy API',
+        'message': 'MyTube YouTube Stream Proxy API',
         'version': '1.0.0',
         'endpoints': {
             '/get_stream/<video_id>': 'Get direct stream URL for a video',
@@ -32,65 +32,55 @@ def get_stream(video_id):
     try:
         logger.info(f"Fetching stream for video: {video_id}")
         
-        # Try multiple format strategies
-        format_options = [
-            'best[ext=mp4]',  # Best MP4 format
-            'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best',  # Combined video+audio
-            'best',  # Any best format
-        ]
+        ydl_opts = {
+            'format': 'best[ext=mp4]/best',  # Prioritize MP4 for Android compatibility
+            'quiet': True,
+            'no_warnings': True,
+            'extract_flat': False,
+            'geo_bypass': True,  # Bypass geo restrictions
+            'nocheckcertificate': True,
+        }
         
-        last_error = None
-        
-        for fmt in format_options:
-            try:
-                ydl_opts = {
-                    'format': fmt,
-                    'quiet': True,
-                    'no_warnings': True,
-                    'extract_flat': False,
-                    'nocheckcertificate': True,
-                }
-                
-                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                    info = ydl.extract_info(f'https://www.youtube.com/watch?v={video_id}', download=False)
-                    
-                    # Get the direct URL
-                    url = info.get('url')
-                    
-                    # If no direct URL, try to get from formats
-                    if not url and 'formats' in info:
-                        # Find best format with URL
-                        formats = [f for f in info['formats'] if f.get('url')]
-                        if formats:
-                            # Prefer formats with both video and audio
-                            progressive = [f for f in formats if f.get('vcodec') != 'none' and f.get('acodec') != 'none']
-                            if progressive:
-                                url = progressive[-1]['url']
-                            else:
-                                url = formats[-1]['url']
-                    
-                    if url:
-                        response_data = {
-                            'success': True,
-                            'video_id': video_id,
-                            'url': url,
-                            'title': info.get('title', 'Unknown'),
-                            'duration': info.get('duration', 0),
-                            'thumbnail': info.get('thumbnail', ''),
-                            'uploader': info.get('uploader', 'Unknown'),
-                            'view_count': info.get('view_count', 0)
-                        }
-                        
-                        logger.info(f"Successfully extracted stream for: {video_id} using format: {fmt}")
-                        return jsonify(response_data)
-                
-            except Exception as e:
-                last_error = str(e)
-                logger.warning(f"Format '{fmt}' failed: {str(e)}")
-                continue
-        
-        # If all formats failed
-        raise Exception(f"All format options failed. Last error: {last_error}")
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(f'https://www.youtube.com/watch?v={video_id}', download=False)
+            
+            # Get best available URL
+            url = info.get('url')
+            
+            # If 'url' is not directly available, look in 'formats'
+            if not url and 'formats' in info:
+                # Find best MP4 format
+                mp4_formats = [f for f in info['formats'] if f.get('ext') == 'mp4' and f.get('url')]
+                if mp4_formats:
+                    # Sort by quality (height)
+                    mp4_formats.sort(key=lambda x: x.get('height', 0) or 0, reverse=True)
+                    url = mp4_formats[0]['url']
+                elif info['formats']:
+                    # Fallback to any format with URL
+                    for f in info['formats']:
+                        if f.get('url'):
+                            url = f['url']
+                            break
+            
+            if not url:
+                return jsonify({
+                    'success': False,
+                    'error': 'No playable stream found',
+                    'video_id': video_id
+                }), 404
+            
+            response_data = {
+                'success': True,
+                'video_id': video_id,
+                'url': url,
+                'title': info.get('title', 'Unknown'),
+                'duration': info.get('duration', 0),
+                'thumbnail': info.get('thumbnail', ''),
+                'uploader': info.get('uploader', 'Unknown')
+            }
+            
+            logger.info(f"Successfully extracted stream for: {video_id}")
+            return jsonify(response_data)
             
     except Exception as e:
         logger.error(f"Error extracting stream: {str(e)}")
